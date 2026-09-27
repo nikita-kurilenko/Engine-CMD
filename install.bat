@@ -121,6 +121,11 @@ REM ═════════════════════════�
 :InitMSVC
 if "!ARCH!"=="32" (set "VCVARS_PATH=!CFG_VCVARS32!") else (set "VCVARS_PATH=!CFG_VCVARS64!")
 
+if defined VCVARS_PATH if not exist "!VCVARS_PATH!" (
+    echo Configured vcvars path is invalid, searching for a replacement...
+    set "VCVARS_PATH="
+)
+
 if not defined VCVARS_PATH (
     set "VCVAR_NAME=vcvars!ARCH!"
     echo Searching for !VCVAR_NAME!.bat...
@@ -408,8 +413,8 @@ for /f "delims=" %%f in ('dir /s /b "C:\Program Files\Microsoft Visual Studio\vc
 >> "!CF!" echo.
 >> "!CF!" echo.
 >> "!CF!" echo # -- MSVC Paths (auto-detected, used when COMPILER=msvc) -------
->> "!CF!" echo VCVARS32=C:\Program Files\Microsoft Visual Studio\18\Insiders\VC\Auxiliary\Build\vcvars32.bat
->> "!CF!" echo VCVARS64=C:\Program Files\Microsoft Visual Studio\18\Insiders\VC\Auxiliary\Build\vcvars64.bat
+>> "!CF!" echo VCVARS32=C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars32.bat
+>> "!CF!" echo VCVARS64=C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat
 >> "!CF!" echo.
 >> "!CF!" echo.
 >> "!CF!" echo.

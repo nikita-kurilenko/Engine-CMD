@@ -107,6 +107,63 @@ static int* tga_to_rgb_texture(const TGAImage& img, int* out_w, int* out_h) {
     return tex;
 }
 
+// ─── Model loading ───────────────────────────────────────────────────────────
+
+// Load one or more OBJ parts (e.g. body + head + eyes) into a single entity.
+// All parts share one bounding box, which is centered on X/Z with its bottom
+// at y=0 and scaled so its largest extent is `fit` units. Any export scale works.
+// z_up: model was exported Z-up (3ds Max) — convert to the engine's Y-up.
+// Textures are appended to `textures` (caller frees). Untextured parts use `color`.
+static int spawn_model(const std::vector<std::string>& parts, bool z_up, float fit,
+                       int color, std::vector<int*>& textures) {
+    std::vector<Model> models;
+    models.reserve(parts.size());
+    for (const std::string& p : parts) models.emplace_back(project_path(p.c_str()));
+
+    auto to_yup = [z_up](const vec4& v) -> vec3 {
+        return z_up ? vec3{v.x, v.z, -v.y} : vec3{v.x, v.y, v.z};
+    };
+
+    vec3 bmin = { 1e30,  1e30,  1e30};
+    vec3 bmax = {-1e30, -1e30, -1e30};
+    for (const Model& m : models) {
+        for (int i = 0; i < m.nverts(); i++) {
+            vec3 p = to_yup(m.vert(i));
+            for (int k = 0; k < 3; k++) {
+                if (p[k] < bmin[k]) bmin[k] = p[k];
+                if (p[k] > bmax[k]) bmax[k] = p[k];
+            }
+        }
+    }
+    vec3 origin = {(bmin.x + bmax.x) * 0.5, bmin.y, (bmin.z + bmax.z) * 0.5};
+    double ext = fmax(bmax.x - bmin.x, fmax(bmax.y - bmin.y, bmax.z - bmin.z));
+    const float S = ext > 0 ? (float)(fit / ext) : 1.0f;
+
+    int ent = entity_create();
+    for (const Model& m : models) {
+        int tw = 0, th = 0;
+        int* tex = tga_to_rgb_texture(m.diffuse(), &tw, &th);
+        if (tex) textures.push_back(tex);
+
+        for (int i = 0; i < m.nfaces(); i++) {
+            Vec3f v[3];
+            Vec2f uv[3];
+            for (int j = 0; j < 3; j++) {
+                vec3 p = (to_yup(m.vert(i, j)) - origin) * (double)S;
+                vec2 t = m.uv(i, j);
+                v[j]  = vec3f_make((float)p.x, (float)p.y, (float)p.z);
+                uv[j] = vec2f_make((float)t.x, (float)t.y);
+            }
+            if (tex)
+                entity_add_face(ent, rface_make_textured(v[0], v[1], v[2],
+                    uv[0], uv[1], uv[2], tex, tw, th, '@'));
+            else
+                entity_add_face(ent, rface_make(v[0], v[1], v[2], color, '@'));
+        }
+    }
+    return ent;
+}
+
 // ─── Scene builders ──────────────────────────────────────────────────────────
 
 // Plane no Texture, just a flat gray face for shadow testing (shader will darken it further)
@@ -191,34 +248,35 @@ int main() {
     // Face-Plane at the bottom - test shadow implementation (no shader, just a flat gray face)
 
     // Verticall plane next to the models - test camera buffer display on plane
-    int cam_plane = entity_create();
-    {
-        RFace tmp[2];
-        build_plane(0, 0.00f, 0.0f, 100, 90, tmp);
-        entity_rotate(cam_plane, 0.0f, 5.0f, 0.0f); // rotate to show perspective
-        entity_add_faces(cam_plane, tmp, 2);
-        entity_move(cam_plane, 0.0f, 0.0f, 0.0f);
-    }
+    // int cam_plane = entity_create();
+    // {
+    //     RFace tmp[2];
+    //     build_plane(0, 0.00f, 0.0f, 100, 90, tmp);
+    //     entity_rotate(cam_plane, 0.0f, 5.0f, 0.0f); // rotate to show perspective
+    //     entity_add_faces(cam_plane, tmp, 2);
+    //     entity_move(cam_plane, 0.0f, 0.0f, 0.0f);
+    // }
 
     // Horizontal plane at the bottom - test shadow implementation (no shader, just a flat gray face)
-    int ent_plane = entity_create();
-    {
-        RFace tmp[2];
-        build_plane(0, -0.01f, -10.0f, 100, 90, tmp);
-        entity_add_faces(ent_plane, tmp, 2);
-        entity_move(ent_plane, 0.0f, -10.0f, 0.0f);
-    }
+    // int ent_plane = entity_create();
+    // {
+    //     RFace tmp[2];
+    //     build_plane(0, -0.01f, -10.0f, 100, 90, tmp);
+    //     entity_add_faces(ent_plane, tmp, 2);
+    //     entity_move(ent_plane, 0.0f, -10.0f, 0.0f);
+    // }
 
-    // Cube at origin — rotation shader: ASCII chars change by viewing angle
+    // Cube behind the model row (left) — rotation shader: ASCII chars change by viewing angle
     int ent_cube = entity_create();
     {
         RFace tmp[12];
         build_solid_cube(0, 0, 0, 12, 31, tmp);
         entity_add_faces(ent_cube, tmp, 12);
+        entity_set_pos(ent_cube, -25.0f, 10.0f, -45.0f);
         entity_set_shader(ent_cube, shader_rotate);
     }
 
-    // Dot sphere to the right — depth shader: chars/colors fade with distance
+    // Dot sphere behind the model row (right) — depth shader: chars/colors fade with distance
     int ent_sphere = entity_create();
     {
         const int RINGS   = 12*2;
@@ -227,65 +285,63 @@ int main() {
         RDot tmp[NDOTS];
         int n = build_sphere_dots(0, 0, 0, 7, RINGS, SECTORS, 32, 'O', tmp);
         entity_add_dots(ent_sphere, tmp, n);
-        entity_set_pos(ent_sphere, 22.0f, 0.0f, 0.0f);
+        entity_set_pos(ent_sphere, 25.0f, 10.0f, -45.0f);
         entity_set_shader(ent_sphere, shader_depth);
     }
 
-    // Diablo3 model to the left — textured (no extra shader needed)
-    int* ansi_tex = NULL;
-    int ansi_tw = 0, ansi_th = 0;
-    int ent_diablo = entity_create();
+    // Model showcase — every OBJ model in a row, all fitted to the same size,
+    // standing on the same floor line (like exhibits on a stage)
+    std::vector<int*> model_textures;   // freed on exit
     {
-        std::string mdl_path = project_path("core\\render\\tinyrenderer-master\\obj\\diablo3_pose\\diablo3_pose.obj");
-        Model diablo(mdl_path);
-        int nfaces = diablo.nfaces();
-        ansi_tex = tga_to_rgb_texture(diablo.diffuse(), &ansi_tw, &ansi_th);
+        struct Showcase {
+            std::vector<std::string> parts;
+            bool z_up;
+            int  color;   // fallback ANSI color if no *_diffuse.tga exists
+        };
+        const std::string OBJ = "core\\render\\tinyrenderer-master\\obj\\";
+        const Showcase showcase[] = {
+            { { OBJ + "diablo3_pose\\diablo3_pose.obj" },                          false, 95 },
+            { { OBJ + "boggie\\body.obj", OBJ + "boggie\\head.obj",
+                OBJ + "boggie\\eyes.obj" },                                          false, 95 },
+            { { OBJ + "african_head\\african_head.obj",
+                OBJ + "african_head\\african_head_eye_inner.obj" },                  false, 95 },
+            { { OBJ + "cat\\12221_Cat_v1_l3.obj" },                                  true,  95 },
+            { { OBJ + "alien\\Alien Animal.obj" },                                   false, 92 },
+        };
+        const int   N       = sizeof(showcase) / sizeof(showcase[0]);
+        const float FIT     = 24.0f;    // largest extent of every model
+        const float SPACING = 34.0f;    // distance between model centers
+        const float FLOOR_Y = -12.0f;
 
-        const float S = 15.0f;
-        for (int i = 0; i < nfaces; i++) {
-            vec4 v0 = diablo.vert(i, 0);
-            vec4 v1 = diablo.vert(i, 1);
-            vec4 v2 = diablo.vert(i, 2);
-            vec2 uv0 = diablo.uv(i, 0);
-            vec2 uv1 = diablo.uv(i, 1);
-            vec2 uv2 = diablo.uv(i, 2);
-
-            // Local space — entity position handles world offset
-            Vec3f a  = vec3f_make((float)v0.x * S, (float)v0.y * S, (float)v0.z * S);
-            Vec3f b  = vec3f_make((float)v1.x * S, (float)v1.y * S, (float)v1.z * S);
-            Vec3f cc = vec3f_make((float)v2.x * S, (float)v2.y * S, (float)v2.z * S);
-
-            if (ansi_tex)
-                entity_add_face(ent_diablo, rface_make_textured(a, b, cc,
-                    vec2f_make((float)uv0.x, (float)uv0.y),
-                    vec2f_make((float)uv1.x, (float)uv1.y),
-                    vec2f_make((float)uv2.x, (float)uv2.y),
-                    ansi_tex, ansi_tw, ansi_th, '@'));
-            else
-                entity_add_face(ent_diablo, rface_make(a, b, cc, 95, '@'));
+        for (int i = 0; i < N; i++) {
+            int ent = spawn_model(showcase[i].parts, showcase[i].z_up, FIT,
+                                  showcase[i].color, model_textures);
+            float x = (i - (N - 1) * 0.5f) * SPACING;
+            entity_set_pos(ent, x, FLOOR_Y, 0.0f);
         }
-        entity_set_pos(ent_diablo, -22.0f, -12.0f, 0.0f);
     }
 
     // Gaussian splats — one near each model, with pulsing animation
-    srand(42);
-    int ent_splat0 = entity_create();
-    splat_build(ent_splat0, 300, 3.5f, 3.5f, 3.5f, 96);   // bright cyan
-    entity_set_pos(ent_splat0, -13.0f, 9.0f, -9.0f);
-    shader_splat_pulse_attach(ent_splat0, 0.5f, 2.0f);
-
-    int ent_splat1 = entity_create();
-    splat_build(ent_splat1, 300, 3.5f, 3.5f, 3.5f, 93);   // bright yellow
-    entity_set_pos(ent_splat1, 30.0f, 9.0f, -9.0f);
-    shader_splat_pulse_attach(ent_splat1, 0.5f, 2.0f);
-
-    int ent_splat2 = entity_create();
-    splat_build(ent_splat2, 300, 3.5f, 3.5f, 3.5f, 95);   // bright magenta
-    entity_set_pos(ent_splat2, -33.0f, 6.0f, 9.0f);
-    shader_splat_pulse_attach(ent_splat2, 0.5f, 2.0f);
+    // srand(42);
+    // int ent_splat0 = entity_create();
+    // splat_build(ent_splat0, 300, 3.5f, 3.5f, 3.5f, 96);   // bright cyan
+    // entity_set_pos(ent_splat0, -13.0f, 9.0f, -9.0f);
+    // shader_splat_pulse_attach(ent_splat0, 0.5f, 2.0f);
+// 
+    // int ent_splat1 = entity_create();
+    // splat_build(ent_splat1, 300, 3.5f, 3.5f, 3.5f, 93);   // bright yellow
+    // entity_set_pos(ent_splat1, 30.0f, 9.0f, -9.0f);
+    // shader_splat_pulse_attach(ent_splat1, 0.5f, 2.0f);
+// 
+    // int ent_splat2 = entity_create();
+    // splat_build(ent_splat2, 300, 3.5f, 3.5f, 3.5f, 95);   // bright magenta
+    // entity_set_pos(ent_splat2, -33.0f, 6.0f, 9.0f);
+    // shader_splat_pulse_attach(ent_splat2, 0.5f, 2.0f);
 
     // ── Lights ────────────────────────────────────────────────────────────
 
+
+    // Okay
     // Radial white light centered above the models
     int light0 = light_create();
     light_set_type(light0, LIGHT_RADIAL);
@@ -304,10 +360,16 @@ int main() {
     float ent_yaw = 0.0f, ent_pitch = 0.0f, ent_x = 0.0f, ent_y = 0.0f, ent_z = 0.0f;
 
     // Flying camera state
-    float cam_x = 0.0f, cam_y = 12.0f, cam_z = 45.0f;
+    float cam_x = 0.0f, cam_y = 5.0f, cam_z = 75.0f;   // back far enough to see the whole model row
     float cam_yaw = PI, cam_pitch = 0.0f;
     const float MOVE_SPEED = 0.5f;
     const float TURN_SPEED = 0.04f;
+
+    // light0 position/intensity state (Numpad-controlled — see below)
+    float light0_x = 0.0f, light0_y = 35.0f, light0_z = 0.0f;
+    float light0_intensity = 1.8f;
+    const float LIGHT_MOVE_SPEED      = 0.5f;
+    const float LIGHT_INTENSITY_SPEED = 0.02f;
 
     // Mouse look state (Windows only — on Linux input_mouse_get returns -1)
     const int   MOUSE_CENTER_X  = 200;
@@ -398,15 +460,35 @@ int main() {
 
 
         // Rotate and Move Entity by arrow keys (test per-entity transform independent of camera)
-        if (input_key_held(VK_NUMPAD4)) entity_move(cam_plane, -MOVE_SPEED, 0.0f, 0.0f);
-        if (input_key_held(VK_NUMPAD6)) entity_move(cam_plane, MOVE_SPEED, 0.0f, 0.0f);
-        if (input_key_held(VK_NUMPAD8)) entity_move(cam_plane, 0.0f, 0.0f, -MOVE_SPEED);
-        if (input_key_held(VK_NUMPAD2)) entity_move(cam_plane, 0.0f, 0.0f, MOVE_SPEED);
-        
-        if (input_key_held(VK_NUMPAD7)) entity_rotate(cam_plane, 0.0f, -TURN_SPEED, 0.0f);
-        if (input_key_held(VK_NUMPAD9)) entity_rotate(cam_plane, 0.0f, TURN_SPEED, 0.0f);
-        if (input_key_held(VK_NUMPAD1)) entity_rotate(cam_plane, -TURN_SPEED, 0.0f, 0.0f);
-        if (input_key_held(VK_NUMPAD3)) entity_rotate(cam_plane, TURN_SPEED, 0.0f, 0.0f);
+        // if (input_key_held(VK_NUMPAD4)) entity_move(cam_plane, -MOVE_SPEED, 0.0f, 0.0f);
+        // if (input_key_held(VK_NUMPAD6)) entity_move(cam_plane, MOVE_SPEED, 0.0f, 0.0f);
+        // if (input_key_held(VK_NUMPAD8)) entity_move(cam_plane, 0.0f, 0.0f, -MOVE_SPEED);
+        // if (input_key_held(VK_NUMPAD2)) entity_move(cam_plane, 0.0f, 0.0f, MOVE_SPEED);
+        //
+        // if (input_key_held(VK_NUMPAD7)) entity_rotate(cam_plane, 0.0f, -TURN_SPEED, 0.0f);
+        // if (input_key_held(VK_NUMPAD9)) entity_rotate(cam_plane, 0.0f, TURN_SPEED, 0.0f);
+        // if (input_key_held(VK_NUMPAD1)) entity_rotate(cam_plane, -TURN_SPEED, 0.0f, 0.0f);
+        // if (input_key_held(VK_NUMPAD3)) entity_rotate(cam_plane, TURN_SPEED, 0.0f, 0.0f);
+
+        // ── light0 control: Numpad 8/2 = Z, 4/6 = X, 7/1 = Y, 9/3 = intensity ──
+        {
+            int moved = 0;
+            if (input_key_held(VK_NUMPAD8_)) { light0_z -= LIGHT_MOVE_SPEED; moved = 1; }
+            if (input_key_held(VK_NUMPAD2_)) { light0_z += LIGHT_MOVE_SPEED; moved = 1; }
+            if (input_key_held(VK_NUMPAD4_)) { light0_x -= LIGHT_MOVE_SPEED; moved = 1; }
+            if (input_key_held(VK_NUMPAD6_)) { light0_x += LIGHT_MOVE_SPEED; moved = 1; }
+            if (input_key_held(VK_NUMPAD7_)) { light0_y += LIGHT_MOVE_SPEED; moved = 1; }
+            if (input_key_held(VK_NUMPAD1_)) { light0_y -= LIGHT_MOVE_SPEED; moved = 1; }
+            if (moved) light_set_pos(light0, light0_x, light0_y, light0_z);
+
+            int intensity_changed = 0;
+            if (input_key_held(VK_NUMPAD9_)) { light0_intensity += LIGHT_INTENSITY_SPEED; intensity_changed = 1; }
+            if (input_key_held(VK_NUMPAD3_)) { light0_intensity -= LIGHT_INTENSITY_SPEED; intensity_changed = 1; }
+            if (intensity_changed) {
+                if (light0_intensity < 0.0f) light0_intensity = 0.0f;
+                light_set_intensity(light0, light0_intensity);
+            }
+        }
 
 
 
@@ -427,7 +509,7 @@ int main() {
 
     entity_destroy_all();
     light_destroy_all();
-    free(ansi_tex);
+    for (int* t : model_textures) free(t);
     cam_destroy_all();
     con_cursor_show();
     con_clear();

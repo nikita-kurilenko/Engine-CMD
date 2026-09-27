@@ -27,17 +27,25 @@ Model::Model(const std::string filename) {
             for (int i : {0,1}) iss >> uv[i];
             tex.push_back({uv.x, 1-uv.y});
         } else if (!line.compare(0, 2, "f ")) {
-            int f,t,n, cnt = 0;
+            int f,t,n;
+            std::vector<int> pv, pt, pn;
             iss >> trash;
             while (iss >> f >> trash >> t >> trash >> n) {
-                facet_vrt.push_back(--f);
-                facet_tex.push_back(--t);
-                facet_nrm.push_back(--n);
-                cnt++;
+                pv.push_back(--f);
+                pt.push_back(--t);
+                pn.push_back(--n);
             }
-            if (3!=cnt) {
-                std::cerr << "Error: the obj file is supposed to be triangulated" << std::endl;
+            if (pv.size() < 3) {
+                std::cerr << "Error: face with fewer than 3 vertices" << std::endl;
                 return;
+            }
+            // Fan-triangulate quads / n-gons: (0,1,2), (0,2,3), ...
+            for (size_t k = 1; k + 1 < pv.size(); k++) {
+                for (size_t idx : {(size_t)0, k, k + 1}) {
+                    facet_vrt.push_back(pv[idx]);
+                    facet_tex.push_back(pt[idx]);
+                    facet_nrm.push_back(pn[idx]);
+                }
             }
         }
     }
